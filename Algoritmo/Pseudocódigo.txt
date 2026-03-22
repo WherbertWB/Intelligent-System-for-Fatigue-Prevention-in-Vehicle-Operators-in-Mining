@@ -1,0 +1,548 @@
+ALGORITMO Sistema_de_Monitoramento_de_Fadiga
+
+INÍCIO
+
+    // =====================================================
+    // 1. CONFIGURAÇÃO INICIAL
+    // =====================================================
+    Configurar variáveis de ambiente
+    Inicializar logging
+    Inicializar mixer de áudio
+    Criar pasta de saída
+    Gerar nomes únicos para arquivos Excel e CSV
+
+    Definir caminho do vídeo
+    Definir caminho da telemetria
+    Definir caminho do modelo YOLO
+
+    Carregar arquivo de telemetria
+    SE houver erro no carregamento ENTÃO
+        criar tabela vazia de telemetria
+    FIMSE
+
+    Carregar modelo YOLO
+    SE GPU disponível ENTÃO
+        mover modelo para CUDA
+        habilitar half precision
+    SENÃO
+        usar CPU
+    FIMSE
+
+    Abrir captura de vídeo
+    SE não conseguir abrir o vídeo ENTÃO
+        encerrar com erro
+    FIMSE
+
+    Inicializar FaceMesh
+
+    Definir índices dos olhos, boca, nariz, queixo e testa
+    Definir thresholds:
+        EAR_THRESHOLD
+        EAR_SEMI_THRESHOLD
+        MAR_THRESHOLD
+        MIN_YAWN_DURATION
+        YAWN_COOLDOWN
+        HEAD_TILT_LOW
+        HEAD_TILT_MODERATE
+        HEAD_TILT_HIGH
+        CRITICAL_EYES_CLOSED_SEC
+
+    Inicializar variáveis fixas da telemetria:
+        TEMPO_CONDUCAO_FIXO
+        OSCILACAO_VELOCIDADE_FIXO
+
+    Inicializar lista de linhas por janela
+    Inicializar índice da janela = 0
+
+    Criar objeto DriverState com:
+        blink_count
+        yawn_count
+        eyes_closed_total
+        max_eyes_closed_streak
+        eyes_semiclosed_total
+        eyes_closed_start
+        eyes_semiclosed_start
+        head_tilt_angle_sum
+        head_tilt_angle_count
+        head_tilt_category
+        vertical_angle_offset
+        is_yawning
+        yawn_start_time
+        last_yawn_time
+        last_bbox
+        missed_frames
+        current_status
+        fuzzy_level
+        microssono_in_window
+        defer_grave_to_next
+        show_note_grave_from_microssono
+        note_timer_until
+
+    // =====================================================
+    // 2. CALCULAR TELEMETRIA FIXA
+    // =====================================================
+    CHAMAR calcular_telemetria_fixed_values()
+
+    FUNÇÃO calcular_telemetria_fixed_values()
+        SE telemetria estiver vazia ENTÃO
+            tempo_conducao_fixo = 0
+            oscilacao_velocidade_fixo = 0
+            RETORNAR
+        FIMSE
+
+        Localizar último evento "Contato ON"
+        SE não existir ENTÃO
+            tempo_conducao_fixo = 0
+            oscilacao_velocidade_fixo = 0
+            RETORNAR
+        FIMSE
+
+        Filtrar dados a partir do último "Contato ON"
+        Calcular tempo de condução em minutos limitado a 180
+        Calcular maior oscilação absoluta de velocidade limitada a 50
+    FIMFUNÇÃO
+
+    FUNÇÃO get_telemetria_data(elapsed)
+        RETORNAR TEMPO_CONDUCAO_FIXO, OSCILACAO_VELOCIDADE_FIXO
+    FIMFUNÇÃO
+
+
+    // =====================================================
+    // 3. FUNÇÕES AUXILIARES
+    // =====================================================
+    FUNÇÃO iou(boxA, boxB)
+        Calcular interseção entre boxA e boxB
+        Calcular união
+        RETORNAR interseção / união
+    FIMFUNÇÃO
+
+    FUNÇÃO ema_bbox(prev, cur, alpha)
+        SE prev for nulo ENTÃO
+            RETORNAR cur
+        SENÃO
+            RETORNAR média exponencial entre prev e cur
+        FIMSE
+    FIMFUNÇÃO
+
+    FUNÇÃO smooth_landmarks(current_landmarks)
+        Armazenar landmarks em histórico
+        Manter apenas os últimos N conjuntos
+        Calcular média móvel ponto a ponto
+        RETORNAR landmarks suavizados
+    FIMFUNÇÃO
+
+    FUNÇÃO calculate_ear(landmarks, eye_indices)
+        Calcular distâncias verticais e horizontal do olho
+        EAR = (v1 + v2) / (2 * h)
+        RETORNAR EAR
+    FIMFUNÇÃO
+
+    FUNÇÃO calculate_mar(landmarks)
+        Calcular distância entre lábio superior e inferior
+        RETORNAR MAR
+    FIMFUNÇÃO
+
+    FUNÇÃO calculate_head_tilt(landmarks, ds)
+        Obter nariz, queixo e testa
+        Calcular comprimento vertical
+        Calcular ângulo vertical
+        Ajustar offset inicial
+        Classificar inclinação em:
+            Normal
+            Baixa Vertical
+            Moderada Vertical
+            Alta Vertical
+        RETORNAR ângulo vertical e categoria
+    FIMFUNÇÃO
+
+    FUNÇÃO detect_face_with_yolo(frame, model)
+        Executar predição do YOLO no frame
+        Para cada bounding box detectada:
+            SE classe = face ENTÃO
+                recortar ROI facial
+                salvar ROI e bbox
+            FIMSE
+        RETORNAR lista de faces detectadas
+    FIMFUNÇÃO
+
+    FUNÇÃO play_alert(sound_name)
+        SE arquivo de áudio existir ENTÃO
+            reproduzir som
+        SENÃO
+            registrar aviso
+        FIMSE
+    FIMFUNÇÃO
+
+    FUNÇÃO show_start_screen()
+        Exibir tela inicial com barra de progresso
+        Reproduzir saudação, se existir
+    FIMFUNÇÃO
+
+
+    // =====================================================
+    // 4. CONFIGURAÇÃO DO SISTEMA FUZZY
+    // =====================================================
+    FUNÇÃO setup_fuzzy_system()
+
+        Criar antecedentes:
+            freq_bocejos
+            piscadas
+            olhos_semicerrados
+            tempo_por_piscada_max
+            total_fechados
+            inclinacao_vertical
+            tempo_conducao
+            oscilacao_velocidade
+
+        Criar consequente:
+            nivel_fadiga
+
+        Definir funções de pertinência para cada variável
+
+        Definir funções de pertinência do nível de fadiga:
+            leve
+            moderada
+            grave
+
+        Criar regras fuzzy:
+            regras para fadiga leve
+            regras para fadiga moderada
+            regras para fadiga grave
+
+        Criar sistema de controle
+        Criar simulador do sistema
+        Guardar universo e funções de pertinência da saída
+
+        RETORNAR simulador, universo, mfs
+    FIMFUNÇÃO
+
+
+    // =====================================================
+    // 5. PROCESSAMENTO DE CADA FRAME
+    // =====================================================
+    FUNÇÃO process_frame(frame, ds, start_time, fps)
+
+        Redimensionar frame para reduzir custo computacional
+
+        Detectar faces com YOLO
+        Selecionar maior bbox como candidata
+
+        SE nenhuma bbox detectada ENTÃO
+            SE existir bbox anterior e ainda estiver dentro do limite de falhas ENTÃO
+                reutilizar última bbox
+            SENÃO
+                informar "Rosto não detectado"
+            FIMSE
+        SENÃO
+            suavizar bbox com EMA
+            atualizar última bbox
+        FIMSE
+
+        SE houver bbox válida ENTÃO
+            Recortar ROI facial
+            Converter ROI para RGB
+            Redimensionar ROI
+            Processar ROI com FaceMesh
+
+            SE landmarks forem detectados ENTÃO
+                Converter landmarks da ROI para coordenadas do frame
+                Suavizar landmarks
+
+                Calcular EAR esquerdo
+                Calcular EAR direito
+                Calcular EAR médio
+                Calcular MAR
+                Calcular ângulo vertical da cabeça
+                Acumular ângulo para média da janela
+
+                // -------------------------
+                // Detecção de olhos fechados
+                // -------------------------
+                SE EAR médio < EAR_THRESHOLD ENTÃO
+                    SE eyes_closed_start = 0 ENTÃO
+                        iniciar contador de olhos fechados
+                    SENÃO
+                        atualizar duração atual de olhos fechados
+                        atualizar pico máximo
+                    FIMSE
+                SENÃO
+                    SE havia olhos fechados anteriormente ENTÃO
+                        calcular duração do fechamento
+                        SE duração entre 0.1 e 1.5 s ENTÃO
+                            incrementar blink_count
+                        FIMSE
+                        SE duração > 0.2 s ENTÃO
+                            somar em eyes_closed_total
+                            atualizar max_eyes_closed_streak
+                        FIMSE
+                        resetar eyes_closed_start
+                    FIMSE
+                FIMSE
+
+                // -------------------------
+                // Detecção de olhos semicerrados
+                // -------------------------
+                SE EAR_SEMI_THRESHOLD > EAR médio >= EAR_THRESHOLD ENTÃO
+                    iniciar ou manter contagem de semicerrados
+                SENÃO
+                    SE havia semicerrados ENTÃO
+                        acumular eyes_semiclosed_total
+                        resetar eyes_semiclosed_start
+                    FIMSE
+                FIMSE
+
+                // -------------------------
+                // Microssono
+                // -------------------------
+                SE eyes_closed_start > 0 ENTÃO
+                    calcular duração atual dos olhos fechados
+                    SE duração >= CRITICAL_EYES_CLOSED_SEC ENTÃO
+                        tocar alerta crítico
+                        marcar microssono_in_window = verdadeiro
+                        marcar defer_grave_to_next = verdadeiro
+                        acumular duração em eyes_closed_total
+                        atualizar pico máximo
+                        resetar eyes_closed_start
+                    FIMSE
+                FIMSE
+
+                // -------------------------
+                // Bocejo
+                // -------------------------
+                SE MAR > MAR_THRESHOLD ENTÃO
+                    SE não estiver bocejando e cooldown já tiver passado ENTÃO
+                        iniciar bocejo
+                    FIMSE
+                SENÃO
+                    SE estava bocejando ENTÃO
+                        SE duração do bocejo >= MIN_YAWN_DURATION ENTÃO
+                            incrementar yawn_count
+                            atualizar last_yawn_time
+                        FIMSE
+                        encerrar estado de bocejo
+                    FIMSE
+                FIMSE
+
+                Desenhar pontos essenciais no frame
+            FIMSE
+
+            Desenhar bbox facial
+        FIMSE
+
+        Calcular tempo decorrido do vídeo
+        Exibir cabeçalho, métricas, rodapé e aviso de microssono herdado
+        Expirar mensagem temporária, se necessário
+
+        RETORNAR frame processado
+    FIMFUNÇÃO
+
+
+    // =====================================================
+    // 6. FUNÇÕES DE SAÍDA
+    // =====================================================
+    FUNÇÃO save_fuzzy_plot(janela, nivel, universo, mfs, pertinencias, pasta_saida)
+        Gerar gráfico das funções de pertinência
+        Preencher áreas de leve, moderada e grave
+        Desenhar linha vertical no valor final
+        Salvar imagem
+    FIMFUNÇÃO
+
+    FUNÇÃO save_gauge_plot(janela, valor, pasta_saida)
+        Gerar fadigômetro horizontal
+        Desenhar faixas:
+            verde = leve
+            laranja = moderada
+            vermelho = grave
+        Desenhar indicador do valor atual
+        Salvar imagem
+    FIMFUNÇÃO
+
+    FUNÇÃO append_window_row(...)
+        Montar linha com:
+            número da janela
+            início e fim
+            bocejos
+            piscadas
+            olhos semicerrados
+            pico de fechamento
+            total de olhos fechados
+            ângulo médio
+            tempo de condução
+            oscilação de velocidade
+            nível de fadiga
+            classificação
+            microssono na janela
+            microssono na janela anterior
+            pertinência leve
+            pertinência moderada
+            pertinência grave
+
+        Adicionar linha à lista em memória
+        Gravar linha incrementalmente no CSV
+    FIMFUNÇÃO
+
+
+    // =====================================================
+    // 7. LOOP PRINCIPAL
+    // =====================================================
+    ds <- novo DriverState
+    sistema_fuzzy, nivel_universe, nivel_mfs <- setup_fuzzy_system()
+
+    calcular_telemetria_fixed_values()
+    show_start_screen()
+
+    last_fuzzy_update <- tempo atual
+    fuzzy_update_interval <- 30 segundos
+    frame_count <- 0
+    start_time <- tempo atual
+    janela_t_ini <- data/hora atual
+
+    fps <- obter FPS do vídeo
+    frame_delay <- 1000 / fps
+
+    ENQUANTO vídeo estiver aberto FAÇA
+
+        Ler frame
+        SE não houver frame ENTÃO
+            sair do loop
+        FIMSE
+
+        frame_count <- frame_count + 1
+
+        SE frame_count for ímpar ENTÃO
+            continuar para próximo frame
+        FIMSE
+
+        frame <- process_frame(frame, ds, start_time, fps)
+
+        // ==========================================
+        // 8. A CADA 30 SEGUNDOS: INFERÊNCIA FUZZY
+        // ==========================================
+        SE tempo atual - last_fuzzy_update >= 30 segundos ENTÃO
+
+            tempo_conducao, oscilacao_velocidade <- get_telemetria_data(...)
+
+            ang_avg <- média do ângulo vertical da janela
+
+            Verificar se não houve amostras nem entradas na janela
+            microssono_prev <- defer_grave_to_next
+
+            SE janela sem dados E sem microssono herdado ENTÃO
+                nivel_final <- 0.0
+                status_text <- "Leve"
+                mu_leve <- 0
+                mu_moderada <- 0
+                mu_grave <- 0
+
+            SENÃO
+                in_tempo_pico <- max_eyes_closed_streak limitado ao universo
+                in_total_fech <- eyes_closed_total limitado ao universo
+
+                SE microssono_prev = verdadeiro ENTÃO
+                    forçar entradas mínimas na região grave
+                FIMSE
+
+                Alimentar entradas do sistema fuzzy:
+                    freq_bocejos
+                    piscadas
+                    olhos_semicerrados
+                    tempo_por_piscada_max
+                    total_fechados
+                    inclinacao_vertical
+                    tempo_conducao
+                    oscilacao_velocidade
+
+                Executar sistema_fuzzy.compute()
+                nivel_crisp_real <- saída defuzzificada
+
+                Classificar:
+                    SE nível <= 4 ENTÃO Leve
+                    SENÃO SE nível <= 7 ENTÃO Moderada
+                    SENÃO Grave
+                    FIMSE
+
+                SE houver microssono herdado E classe não for Grave ENTÃO
+                    status_text <- "Grave"
+                    nivel_final <- 10.0
+                    mu_leve <- 0
+                    mu_moderada <- 0
+                    mu_grave <- 1
+                SENÃO
+                    nivel_final <- nivel_crisp_real
+                    calcular pertinências leve, moderada e grave por interp_membership
+                FIMSE
+            FIMSE
+
+            Atualizar UI:
+                ds.fuzzy_level <- nivel_final
+                ds.current_status <- status_text
+
+            SE microssono_prev ENTÃO
+                mostrar observação temporária na tela
+            FIMSE
+
+            Salvar gráfico fuzzy
+            Salvar fadigômetro
+
+            janela_t_fim <- data/hora atual
+
+            append_window_row(
+                janela_idx,
+                janela_t_ini,
+                janela_t_fim,
+                métricas da janela,
+                nivel_final,
+                status_text,
+                pertinências,
+                microssono_prev,
+                ds.microssono_in_window
+            )
+
+            // preparar próxima janela
+            janela_idx <- janela_idx + 1
+            janela_t_ini <- data/hora atual
+
+            Resetar acumuladores da janela:
+                blink_count <- 0
+                yawn_count <- 0
+                eyes_semiclosed_total <- 0
+                eyes_closed_total <- 0
+                max_eyes_closed_streak <- 0
+                head_tilt_angle_sum <- 0
+                head_tilt_angle_count <- 0
+
+            SE microssono_prev ENTÃO
+                defer_grave_to_next <- falso
+            FIMSE
+
+            microssono_in_window <- falso
+            last_fuzzy_update <- tempo atual
+
+        FIMSE
+
+        Exibir frame na tela
+
+        SE tecla ESC pressionada ENTÃO
+            sair do loop
+        FIMSE
+
+    FIMENQUANTO
+
+
+    // =====================================================
+    // 9. FINALIZAÇÃO
+    // =====================================================
+    SE existir pelo menos uma janela processada ENTÃO
+        Converter lista de janelas em DataFrame
+        Ordenar por número da janela
+        Salvar Excel final
+    SENÃO
+        registrar que nenhuma janela foi processada
+    FIMSE
+
+    Liberar captura de vídeo
+    Fechar janelas OpenCV
+    Encerrar mixer de áudio
+    Registrar encerramento do sistema
+
+FIM
